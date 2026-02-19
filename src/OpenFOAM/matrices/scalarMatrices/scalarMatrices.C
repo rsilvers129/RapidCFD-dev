@@ -64,13 +64,16 @@ void Foam::LUDecompose
             }
         }
 
-        if (largestCoeff == 0.0)
+        if (largestCoeff < SMALL)
         {
             FatalErrorIn
             (
                 "LUdecompose"
                 "(scalarSquareMatrix& matrix, labelList& rowIndices)"
-            )   << "Singular matrix" << exit(FatalError);
+            )   << "Near-singular matrix (perturbed)" << endl;
+            matrix[i][i] += SMALL;
+            largestCoeff = SMALL;
+            // FatalError replaced
         }
 
         vv[i] = 1.0/largestCoeff;
