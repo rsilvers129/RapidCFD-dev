@@ -38,6 +38,8 @@ Description
 #include "zeroGradientFvPatchFields.H"
 #include "fixedRhoFvPatchScalarField.H"
 #include "fusedFlux.H"
+#include "fusedViscFlux.H"
+#include "fusedPostSolve.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -173,15 +175,21 @@ int main(int argc, char *argv[])
             rhoU = rho*U;
         }
 
-        // --- Solve energy
+        // --- Solve energy (fused viscous flux)
+        surfaceVectorField snGradU("snGradU", fvc::snGrad(U));
+
         surfaceScalarField sigmaDotU
         (
-            "sigmaDotU",
-            (
-                fvc::interpolate(muEff)*mesh.magSf()*fvc::snGrad(U)
-              + (mesh.Sf() & fvc::interpolate(tauMC))
-            )
-            & (a_pos*U_pos + a_neg*U_neg)
+            IOobject("sigmaDotU", runTime.timeName(), mesh),
+            mesh,
+            dimensionedScalar("sigmaDotU", dimEnergy/dimTime, 0.0)
+        );
+
+        launchFusedViscFluxKernel
+        (
+            muEff, tauMC, snGradU, mesh,
+            a_pos, a_neg, U_pos, U_neg,
+            sigmaDotU
         );
 
         solve
@@ -191,7 +199,8 @@ int main(int argc, char *argv[])
           - fvc::div(sigmaDotU)
         );
 
-        e = rhoE/rho - 0.5*magSqr(U);
+        // --- Fused e and p: one kernel (replaces ~8 Thrust launches)
+        launchFusedEandP(rho, U, rhoE, psi, e, p);
         e.correctBoundaryConditions();
         thermo.correct();
         rhoE.boundaryField() =
@@ -208,12 +217,11 @@ int main(int argc, char *argv[])
               - fvm::laplacian(turbulence->alphaEff(), e)
             );
             thermo.correct();
-            rhoE = rho*(e + 0.5*magSqr(U));
+            // --- Fused rhoE update (replaces ~4 Thrust launches)
+            launchFusedRhoEUpdate(rho, e, U, rhoE);
         }
 
-        p.dimensionedInternalField() =
-            rho.dimensionedInternalField()
-           /psi.dimensionedInternalField();
+        // p internal field already set by fusedPostSolve
         p.correctBoundaryConditions();
         rho.boundaryField() = psi.boundaryField()*p.boundaryField();
 
