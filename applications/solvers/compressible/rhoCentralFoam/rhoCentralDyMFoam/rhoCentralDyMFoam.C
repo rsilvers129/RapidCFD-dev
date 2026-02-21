@@ -35,7 +35,7 @@ Description
 #include "turbulenceModel.H"
 #include "zeroGradientFvPatchFields.H"
 #include "fixedRhoFvPatchScalarField.H"
-#include "motionSolver.H"
+#include "dynamicFvMesh.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -44,7 +44,7 @@ int main(int argc, char *argv[])
     #include "setRootCase.H"
 
     #include "createTime.H"
-    #include "createMesh.H"
+    #include "createDynamicFvMesh.H"
     #include "createFields.H"
     #include "readTimeControls.H"
 
@@ -56,7 +56,7 @@ int main(int argc, char *argv[])
 
     Info<< "\nStarting time loop\n" << endl;
 
-    autoPtr<Foam::motionSolver> motionPtr = Foam::motionSolver::New(mesh);
+
 
     while (runTime.run())
     {
@@ -162,7 +162,7 @@ int main(int argc, char *argv[])
 
         Info<< "Time = " << runTime.timeName() << nl << endl;
 
-        mesh.movePoints(motionPtr->newPoints());
+        mesh.update();
 
         phi = aphiv_pos*rho_pos + aphiv_neg*rho_neg;
 
