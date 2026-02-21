@@ -25,5 +25,5 @@ cutoo      = $(Ctoo)
 
 LINK_LIBS   = $(c++DBUG)
 
-LINKLIBSO   = $(CC) $(c++FLAGS) -shared -cudart shared -Xlinker --add-needed -Xlinker --no-as-needed
-LINKEXE     = $(CC) $(c++FLAGS) -cudart shared -Xlinker --add-needed -Xlinker --no-as-needed
+LINKLIBSO   = $(CC) $(c++FLAGS) -shared -cudart shared -Xlinker --add-needed -Xlinker --no-as-needed -Xlinker --allow-shlib-undefined
+LINKEXE     = $(CC) $(c++FLAGS) -cudart shared -Xlinker --add-needed -Xlinker --no-as-needed -Xlinker --allow-shlib-undefined

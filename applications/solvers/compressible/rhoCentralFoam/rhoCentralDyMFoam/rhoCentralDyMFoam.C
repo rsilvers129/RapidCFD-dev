@@ -26,7 +26,9 @@ Application
 
 Description
     Density-based compressible flow solver based on central-upwind schemes of
-    Kurganov and Tadmor
+    Kurganov and Tadmor.
+
+    GPU-optimized with fused flux kernels + dynamic mesh support.
 
 \*---------------------------------------------------------------------------*/
 
@@ -36,6 +38,9 @@ Description
 #include "zeroGradientFvPatchFields.H"
 #include "fixedRhoFvPatchScalarField.H"
 #include "dynamicFvMesh.H"
+#include "fusedFlux.H"
+#include "fusedViscFlux.H"
+#include "fusedPostSolve.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -54,105 +59,83 @@ int main(int argc, char *argv[])
 
     dimensionedScalar v_zero("v_zero", dimVolume/dimTime, 0.0);
 
+    bool isTadmor = (fluxScheme == "Tadmor");
+
     Info<< "\nStarting time loop\n" << endl;
-
-
 
     while (runTime.run())
     {
-        // --- upwind interpolation of primitive fields on faces
+        // --- Compute speed of sound (cell field, needed by fused kernel)
+        volScalarField rPsi("rPsi", 1.0/psi);
+        volScalarField c("c", sqrt(thermo.Cp()/thermo.Cv()*rPsi));
 
-        surfaceScalarField rho_pos
+        // --- Allocate output surface fields for fused kernel ---
+        surfaceScalarField amaxSf
         (
-            fvc::interpolate(rho, pos, "reconstruct(rho)")
-        );
-        surfaceScalarField rho_neg
-        (
-            fvc::interpolate(rho, neg, "reconstruct(rho)")
-        );
-
-        surfaceVectorField rhoU_pos
-        (
-            fvc::interpolate(rhoU, pos, "reconstruct(U)")
-        );
-        surfaceVectorField rhoU_neg
-        (
-            fvc::interpolate(rhoU, neg, "reconstruct(U)")
+            IOobject("amaxSf", runTime.timeName(), mesh),
+            mesh,
+            dimensionedScalar("amaxSf", dimVolume/dimTime, 0.0)
         );
 
-        volScalarField rPsi(1.0/psi);
-        surfaceScalarField rPsi_pos
+        surfaceScalarField a_pos
         (
-            fvc::interpolate(rPsi, pos, "reconstruct(T)")
-        );
-        surfaceScalarField rPsi_neg
-        (
-            fvc::interpolate(rPsi, neg, "reconstruct(T)")
+            IOobject("a_pos", runTime.timeName(), mesh),
+            mesh,
+            dimensionedScalar("a_pos", dimless, 0.5)
         );
 
-        surfaceScalarField e_pos
+        surfaceScalarField a_neg
         (
-            fvc::interpolate(e, pos, "reconstruct(T)")
-        );
-        surfaceScalarField e_neg
-        (
-            fvc::interpolate(e, neg, "reconstruct(T)")
+            IOobject("a_neg", runTime.timeName(), mesh),
+            mesh,
+            dimensionedScalar("a_neg", dimless, 0.5)
         );
 
-        surfaceVectorField U_pos(rhoU_pos/rho_pos);
-        surfaceVectorField U_neg(rhoU_neg/rho_neg);
-
-        surfaceScalarField p_pos(rho_pos*rPsi_pos);
-        surfaceScalarField p_neg(rho_neg*rPsi_neg);
-
-        surfaceScalarField phiv_pos(U_pos & mesh.Sf());
-        surfaceScalarField phiv_neg(U_neg & mesh.Sf());
-
-        fvc::makeRelative(phiv_pos, U);
-        fvc::makeRelative(phiv_neg, U);
-
-        volScalarField c(sqrt(thermo.Cp()/thermo.Cv()*rPsi));
-        surfaceScalarField cSf_pos
+        surfaceVectorField U_pos
         (
-            fvc::interpolate(c, pos, "reconstruct(T)")*mesh.magSf()
-        );
-        surfaceScalarField cSf_neg
-        (
-            fvc::interpolate(c, neg, "reconstruct(T)")*mesh.magSf()
+            IOobject("U_pos", runTime.timeName(), mesh),
+            mesh,
+            dimensionedVector("U_pos", dimVelocity, vector::zero)
         );
 
-        surfaceScalarField ap
+        surfaceVectorField U_neg
         (
-            max(max(phiv_pos + cSf_pos, phiv_neg + cSf_neg), v_zero)
-        );
-        surfaceScalarField am
-        (
-            min(min(phiv_pos - cSf_pos, phiv_neg - cSf_neg), v_zero)
+            IOobject("U_neg", runTime.timeName(), mesh),
+            mesh,
+            dimensionedVector("U_neg", dimVelocity, vector::zero)
         );
 
-        surfaceScalarField a_pos(ap/(ap - am));
+        surfaceVectorField phiUp
+        (
+            IOobject("phiUp", runTime.timeName(), mesh),
+            mesh,
+            dimensionedVector
+            (
+                "phiUp",
+                dimDensity*dimVelocity*dimVolume/dimTime,
+                vector::zero
+            )
+        );
 
-        surfaceScalarField amaxSf("amaxSf", max(mag(am), mag(ap)));
+        surfaceScalarField phiEp
+        (
+            IOobject("phiEp", runTime.timeName(), mesh),
+            mesh,
+            dimensionedScalar("phiEp", dimEnergy/dimTime, 0.0)
+        );
 
-        surfaceScalarField aSf(am*a_pos);
-
-        if (fluxScheme == "Tadmor")
-        {
-            aSf = -0.5*amaxSf;
-            a_pos = 0.5;
-        }
-
-        surfaceScalarField a_neg(1.0 - a_pos);
-
-        phiv_pos *= a_pos;
-        phiv_neg *= a_neg;
-
-        surfaceScalarField aphiv_pos(phiv_pos - aSf);
-        surfaceScalarField aphiv_neg(phiv_neg + aSf);
-
-        // Reuse amaxSf for the maximum positive and negative fluxes
-        // estimated by the central scheme
-        amaxSf = max(mag(aphiv_pos), mag(aphiv_neg));
+        // --- FUSED FLUX KERNEL ---
+        // Replaces ~30 separate GPU kernel launches with one:
+        //   - 12x fvc::interpolate (rho, rhoU, rPsi, e, c to faces)
+        //   - ~18x surface field arithmetic (U, p, phiv, cSf, ap, am, etc.)
+        // All computed in a single pass over internal faces.
+        launchFusedFluxKernel
+        (
+            rho, rhoU, e, psi, c, mesh,
+            phi, phiUp, phiEp, amaxSf,
+            a_pos, a_neg, U_pos, U_neg,
+            isTadmor
+        );
 
         #include "compressibleCourantNo.H"
         #include "readTimeControls.H"
@@ -164,21 +147,11 @@ int main(int argc, char *argv[])
 
         mesh.update();
 
-        phi = aphiv_pos*rho_pos + aphiv_neg*rho_neg;
-
-        surfaceVectorField phiUp
-        (
-            (aphiv_pos*rhoU_pos + aphiv_neg*rhoU_neg)
-          + (a_pos*p_pos + a_neg*p_neg)*mesh.Sf()
-        );
-
-        surfaceScalarField phiEp
-        (
-            aphiv_pos*(rho_pos*(e_pos + 0.5*magSqr(U_pos)) + p_pos)
-          + aphiv_neg*(rho_neg*(e_neg + 0.5*magSqr(U_neg)) + p_neg)
-          + mesh.phi()*(a_pos*p_pos + a_neg*p_neg)
-          + aSf*p_pos - aSf*p_neg
-        );
+        // --- Dynamic mesh correction ---
+        // Add mesh motion flux contribution to energy flux.
+        // The fused kernel computes phiEp with absolute velocities;
+        // mesh.phi() accounts for the grid velocity for moving meshes.
+        phiEp += mesh.phi() * fvc::interpolate(rho/psi);
 
         volScalarField muEff(turbulence->muEff());
         volTensorField tauMC("tauMC", muEff*dev2(Foam::T(fvc::grad(U))));
@@ -206,14 +179,21 @@ int main(int argc, char *argv[])
             rhoU = rho*U;
         }
 
-        // --- Solve energy
+        // --- Solve energy (fused viscous flux)
+        surfaceVectorField snGradU("snGradU", fvc::snGrad(U));
+
         surfaceScalarField sigmaDotU
         (
-            (
-                fvc::interpolate(muEff)*mesh.magSf()*fvc::snGrad(U)
-              + (mesh.Sf() & fvc::interpolate(tauMC))
-            )
-            & (a_pos*U_pos + a_neg*U_neg)
+            IOobject("sigmaDotU", runTime.timeName(), mesh),
+            mesh,
+            dimensionedScalar("sigmaDotU", dimEnergy/dimTime, 0.0)
+        );
+
+        launchFusedViscFluxKernel
+        (
+            muEff, tauMC, snGradU, mesh,
+            a_pos, a_neg, U_pos, U_neg,
+            sigmaDotU
         );
 
         solve
@@ -223,7 +203,8 @@ int main(int argc, char *argv[])
           - fvc::div(sigmaDotU)
         );
 
-        e = rhoE/rho - 0.5*magSqr(U);
+        // --- Fused e and p: one kernel (replaces ~8 Thrust launches)
+        launchFusedEandP(rho, U, rhoE, psi, e, p);
         e.correctBoundaryConditions();
         thermo.correct();
         rhoE.boundaryField() =
@@ -240,12 +221,11 @@ int main(int argc, char *argv[])
               - fvm::laplacian(turbulence->alphaEff(), e)
             );
             thermo.correct();
-            rhoE = rho*(e + 0.5*magSqr(U));
+            // --- Fused rhoE update (replaces ~4 Thrust launches)
+            launchFusedRhoEUpdate(rho, e, U, rhoE);
         }
 
-        p.dimensionedInternalField() =
-            rho.dimensionedInternalField()
-           /psi.dimensionedInternalField();
+        // p internal field already set by fusedPostSolve
         p.correctBoundaryConditions();
         rho.boundaryField() = psi.boundaryField()*p.boundaryField();
 
