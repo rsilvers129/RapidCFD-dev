@@ -12,7 +12,7 @@ EXE_LIBS = \
     -lfiniteVolume \
     -lfluidThermophysicalModels \
     -lspecie \
-    -lrhoCentralFoam \
+    -lrhoCentralFoamCUDA \
     -lcompressibleTurbulenceModel \
     -lcompressibleRASModels \
     -lcompressibleLESModels \
