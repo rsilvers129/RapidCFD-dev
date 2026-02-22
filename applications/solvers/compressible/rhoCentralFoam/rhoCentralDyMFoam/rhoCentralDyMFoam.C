@@ -41,6 +41,7 @@ Description
 #include "fusedFlux.H"
 #include "fusedViscFlux.H"
 #include "fusedPostSolve.H"
+#include "fastMeshUpdate.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -60,6 +61,50 @@ int main(int argc, char *argv[])
     dimensionedScalar v_zero("v_zero", dimVolume/dimTime, 0.0);
 
     bool isTadmor = (fluxScheme == "Tadmor");
+
+    // --- Fast mesh update: read mesh velocity from dynamicMeshDict ---
+    // For solidBodyMotionFvMesh + linearMotion, the mesh velocity is constant.
+    // We compute meshPhi analytically on GPU instead of calling mesh.update().
+    vector meshVelocity(vector::zero);
+    {
+        IOdictionary dynamicMeshDict
+        (
+            IOobject
+            (
+                "dynamicMeshDict",
+                runTime.constant(),
+                mesh,
+                IOobject::MUST_READ,
+                IOobject::NO_WRITE,
+                false
+            )
+        );
+
+        const dictionary& sbmCoeffs =
+            dynamicMeshDict.subDict("solidBodyMotionFvMeshCoeffs");
+        const dictionary& motionCoeffs =
+            sbmCoeffs.subDict("linearMotionCoeffs");
+        meshVelocity = motionCoeffs.lookup("velocity");
+
+        Info<< "Fast mesh update: linearMotion velocity = "
+            << meshVelocity << endl;
+    }
+
+    // Pre-allocate meshPhi surface field (stays on GPU)
+    surfaceScalarField meshPhiField
+    (
+        IOobject
+        (
+            "analyticMeshPhi",
+            runTime.timeName(),
+            mesh,
+            IOobject::NO_READ,
+            IOobject::NO_WRITE,
+            false
+        ),
+        mesh,
+        dimensionedScalar("zero", dimVolume/dimTime, 0.0)
+    );
 
     Info<< "\nStarting time loop\n" << endl;
 
@@ -145,13 +190,14 @@ int main(int argc, char *argv[])
 
         Info<< "Time = " << runTime.timeName() << nl << endl;
 
-        mesh.update();
+        // --- Fast GPU mesh update (no CPU recalculation) ---
+        // For linearMotion: V and Sf are invariant under translation.
+        // Only meshPhi changes: meshPhi[f] = meshVelocity & Sf[f]
+        computeAnalyticalMeshPhi(mesh, meshPhiField, meshVelocity);
 
         // --- Dynamic mesh correction ---
         // Add mesh motion flux contribution to energy flux.
-        // The fused kernel computes phiEp with absolute velocities;
-        // mesh.phi() accounts for the grid velocity for moving meshes.
-        phiEp += mesh.phi() * fvc::interpolate(rho/psi);
+        phiEp += meshPhiField * fvc::interpolate(rho/psi);
 
         volScalarField muEff(turbulence->muEff());
         volTensorField tauMC("tauMC", muEff*dev2(Foam::T(fvc::grad(U))));
