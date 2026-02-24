@@ -105,7 +105,8 @@ protected:
             );
 
             //- Set the source and target seed faces
-            virtual void setNextFaces
+            //  Returns true if faces are set, false if walk is complete
+            virtual bool setNextFaces
             (
                 label& startSeedI,
                 label& srcFaceI,
@@ -119,11 +120,28 @@ protected:
 
         // Evaluation
 
+            //- Quick reject test: check if faces are candidates for
+            //  intersection based on face area, distance and orientation
+            virtual bool isCandidate
+            (
+                const label srcFaceI,
+                const label tgtFaceI
+            ) const;
+
             //- Area of intersection between source and target faces
             virtual scalar interArea
             (
                 const label srcFaceI,
                 const label tgtFaceI
+            ) const;
+
+            //- Return true if source and target faces overlap
+            //  (fast boolean check, no area computation)
+            virtual bool overlaps
+            (
+                const label srcFaceI,
+                const label tgtFaceI,
+                const scalar threshold
             ) const;
 
 

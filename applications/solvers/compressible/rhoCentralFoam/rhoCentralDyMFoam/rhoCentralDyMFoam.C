@@ -170,6 +170,10 @@ int main(int argc, char *argv[])
         );
 
         // --- FUSED FLUX KERNEL ---
+#include <cuda_runtime.h>
+        cudaDeviceSynchronize();
+        double t0 = runTime.elapsedClockTime();
+
         // Replaces ~30 separate GPU kernel launches with one:
         //   - 12x fvc::interpolate (rho, rhoU, rPsi, e, c to faces)
         //   - ~18x surface field arithmetic (U, p, phiv, cSf, ap, am, etc.)
@@ -181,6 +185,9 @@ int main(int argc, char *argv[])
             a_pos, a_neg, U_pos, U_neg,
             isTadmor
         );
+
+        cudaDeviceSynchronize();
+        double t1 = runTime.elapsedClockTime();
 
         #include "compressibleCourantNo.H"
         #include "readTimeControls.H"
@@ -198,6 +205,9 @@ int main(int argc, char *argv[])
         // --- Dynamic mesh correction ---
         // Add mesh motion flux contribution to energy flux.
         phiEp += meshPhiField * fvc::interpolate(rho/psi);
+
+        cudaDeviceSynchronize();
+        double t2 = runTime.elapsedClockTime();
 
         volScalarField muEff(turbulence->muEff());
         volTensorField tauMC("tauMC", muEff*dev2(Foam::T(fvc::grad(U))));
@@ -225,6 +235,9 @@ int main(int argc, char *argv[])
             rhoU = rho*U;
         }
 
+        cudaDeviceSynchronize();
+        double t3 = runTime.elapsedClockTime();
+
         // --- Solve energy (fused viscous flux)
         surfaceVectorField snGradU("snGradU", fvc::snGrad(U));
 
@@ -248,6 +261,9 @@ int main(int argc, char *argv[])
           + fvc::div(phiEp)
           - fvc::div(sigmaDotU)
         );
+
+        cudaDeviceSynchronize();
+        double t4 = runTime.elapsedClockTime();
 
         // --- Fused e and p: one kernel (replaces ~8 Thrust launches)
         launchFusedEandP(rho, U, rhoE, psi, e, p);
@@ -276,6 +292,23 @@ int main(int argc, char *argv[])
         rho.boundaryField() = psi.boundaryField()*p.boundaryField();
 
         turbulence->correct();
+
+        cudaDeviceSynchronize();
+        double t5 = runTime.elapsedClockTime();
+
+        if (runTime.value() > 0)
+        {
+            double dt1 = t1 - t0;
+            double dt2 = t2 - t1;
+            double dt3 = t3 - t2;
+            double dt4 = t4 - t3;
+            double dt5 = t5 - t4;
+            Info<< "TIMING: Flux=" << dt1
+                << "s, Mesh=" << dt2
+                << "s, RhoU=" << dt3
+                << "s, RhoE=" << dt4
+                << "s, Post=" << dt5 << "s" << nl;
+        }
 
         runTime.write();
 

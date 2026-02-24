@@ -7,7 +7,7 @@ c++WARN     = -Xcompiler -Wall -Xcompiler -Wextra -Xcompiler -Wno-unused-paramet
               -Xcudafe "--diag_suppress=implicit_return_from_non_void_function" \
               -Xcudafe "--diag_suppress=virtual_function_decl_hidden"
 
-CC          = nvcc -std=c++14 -m64 -arch=$(WM_GPU_ARCH) --use_fast_math -Xptxas -O3
+CC          = nvcc -std=c++0x -m64 -arch=$(WM_GPU_ARCH) --use_fast_math -Xptxas -O3
 
 include $(RULES)/c++$(WM_COMPILE_OPTION)
 

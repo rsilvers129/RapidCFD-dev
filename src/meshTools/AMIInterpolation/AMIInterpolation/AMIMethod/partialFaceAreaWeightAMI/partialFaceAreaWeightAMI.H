@@ -65,7 +65,7 @@ private:
         // Marching front
 
             //- Set the source and target seed faces
-            virtual void setNextFaces
+            virtual bool setNextFaces
             (
                 label& startSeedI,
                 label& srcFaceI,

@@ -28,7 +28,7 @@ License
 // * * * * * * * * * * * * * Private Member Functions  * * * * * * * * * * * //
 
 template<class SourcePatch, class TargetPatch>
-void Foam::partialFaceAreaWeightAMI<SourcePatch, TargetPatch>::setNextFaces
+bool Foam::partialFaceAreaWeightAMI<SourcePatch, TargetPatch>::setNextFaces
 (
     label& startSeedI,
     label& srcFaceI,
@@ -39,7 +39,7 @@ void Foam::partialFaceAreaWeightAMI<SourcePatch, TargetPatch>::setNextFaces
     const bool errorOnNotFound
 ) const
 {
-    faceAreaWeightAMI<SourcePatch, TargetPatch>::setNextFaces
+    return faceAreaWeightAMI<SourcePatch, TargetPatch>::setNextFaces
     (
         startSeedI,
         srcFaceI,
