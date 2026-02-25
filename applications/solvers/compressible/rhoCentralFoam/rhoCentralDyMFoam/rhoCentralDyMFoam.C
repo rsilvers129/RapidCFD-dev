@@ -28,7 +28,8 @@ Description
     Density-based compressible flow solver based on central-upwind schemes of
     Kurganov and Tadmor.
 
-    GPU-optimized with fused flux kernels + dynamic mesh support.
+    Hybrid approach: fused GPU kernel for internal faces (fast) +
+    standard boundary computation for AMI/coupled patches (correct).
 
 \*---------------------------------------------------------------------------*/
 
@@ -41,7 +42,6 @@ Description
 #include "fusedFlux.H"
 #include "fusedViscFlux.H"
 #include "fusedPostSolve.H"
-#include "fastMeshUpdate.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -62,59 +62,15 @@ int main(int argc, char *argv[])
 
     bool isTadmor = (fluxScheme == "Tadmor");
 
-    // --- Fast mesh update: read mesh velocity from dynamicMeshDict ---
-    // For solidBodyMotionFvMesh + linearMotion, the mesh velocity is constant.
-    // We compute meshPhi analytically on GPU instead of calling mesh.update().
-    vector meshVelocity(vector::zero);
-    {
-        IOdictionary dynamicMeshDict
-        (
-            IOobject
-            (
-                "dynamicMeshDict",
-                runTime.constant(),
-                mesh,
-                IOobject::MUST_READ,
-                IOobject::NO_WRITE,
-                false
-            )
-        );
-
-        const dictionary& sbmCoeffs =
-            dynamicMeshDict.subDict("solidBodyMotionFvMeshCoeffs");
-        const dictionary& motionCoeffs =
-            sbmCoeffs.subDict("linearMotionCoeffs");
-        meshVelocity = motionCoeffs.lookup("velocity");
-
-        Info<< "Fast mesh update: linearMotion velocity = "
-            << meshVelocity << endl;
-    }
-
-    // Pre-allocate meshPhi surface field (stays on GPU)
-    surfaceScalarField meshPhiField
-    (
-        IOobject
-        (
-            "analyticMeshPhi",
-            runTime.timeName(),
-            mesh,
-            IOobject::NO_READ,
-            IOobject::NO_WRITE,
-            false
-        ),
-        mesh,
-        dimensionedScalar("zero", dimVolume/dimTime, 0.0)
-    );
-
     Info<< "\nStarting time loop\n" << endl;
 
     while (runTime.run())
     {
-        // --- Compute speed of sound (cell field, needed by fused kernel)
+        // --- Compute speed of sound
         volScalarField rPsi("rPsi", 1.0/psi);
         volScalarField c("c", sqrt(thermo.Cp()/thermo.Cv()*rPsi));
 
-        // --- Allocate output surface fields for fused kernel ---
+        // --- Allocate output surface fields ---
         surfaceScalarField amaxSf
         (
             IOobject("amaxSf", runTime.timeName(), mesh),
@@ -169,15 +125,13 @@ int main(int argc, char *argv[])
             dimensionedScalar("phiEp", dimEnergy/dimTime, 0.0)
         );
 
-        // --- FUSED FLUX KERNEL ---
+        // ============================================================
+        // STEP 1: Fused kernel for internal faces (FAST — 1 kernel)
+        // ============================================================
 #include <cuda_runtime.h>
         cudaDeviceSynchronize();
         double t0 = runTime.elapsedClockTime();
 
-        // Replaces ~30 separate GPU kernel launches with one:
-        //   - 12x fvc::interpolate (rho, rhoU, rPsi, e, c to faces)
-        //   - ~18x surface field arithmetic (U, p, phiv, cSf, ap, am, etc.)
-        // All computed in a single pass over internal faces.
         launchFusedFluxKernel
         (
             rho, rhoU, e, psi, c, mesh,
@@ -189,6 +143,141 @@ int main(int argc, char *argv[])
         cudaDeviceSynchronize();
         double t1 = runTime.elapsedClockTime();
 
+        // ============================================================
+        // STEP 2: Boundary correction for coupled (AMI) patches
+        // Standard interpolation gives correct boundary face values.
+        // We only copy the boundary portions to the fused output fields.
+        // ============================================================
+        {
+            surfaceScalarField rho_pos
+            (
+                fvc::interpolate(rho, pos, "reconstruct(rho)")
+            );
+            surfaceScalarField rho_neg
+            (
+                fvc::interpolate(rho, neg, "reconstruct(rho)")
+            );
+
+            surfaceVectorField rhoU_pos
+            (
+                fvc::interpolate(rhoU, pos, "reconstruct(U)")
+            );
+            surfaceVectorField rhoU_neg
+            (
+                fvc::interpolate(rhoU, neg, "reconstruct(U)")
+            );
+
+            surfaceScalarField rPsi_pos
+            (
+                fvc::interpolate(rPsi, pos, "reconstruct(T)")
+            );
+            surfaceScalarField rPsi_neg
+            (
+                fvc::interpolate(rPsi, neg, "reconstruct(T)")
+            );
+
+            surfaceScalarField e_pos_f
+            (
+                fvc::interpolate(e, pos, "reconstruct(T)")
+            );
+            surfaceScalarField e_neg_f
+            (
+                fvc::interpolate(e, neg, "reconstruct(T)")
+            );
+
+            surfaceVectorField U_pos_s("U_pos_s", rhoU_pos/rho_pos);
+            surfaceVectorField U_neg_s("U_neg_s", rhoU_neg/rho_neg);
+
+            surfaceScalarField p_pos("p_pos", rho_pos*rPsi_pos);
+            surfaceScalarField p_neg("p_neg", rho_neg*rPsi_neg);
+
+            surfaceScalarField phiv_pos("phiv_pos", U_pos_s & mesh.Sf());
+            surfaceScalarField phiv_neg("phiv_neg", U_neg_s & mesh.Sf());
+
+            surfaceScalarField cSf_pos
+            (
+                "cSf_pos",
+                fvc::interpolate(c, pos, "reconstruct(T)")*mesh.magSf()
+            );
+            surfaceScalarField cSf_neg
+            (
+                "cSf_neg",
+                fvc::interpolate(c, neg, "reconstruct(T)")*mesh.magSf()
+            );
+
+            surfaceScalarField ap_s
+            (
+                max(max(phiv_pos + cSf_pos, phiv_neg + cSf_neg), v_zero)
+            );
+            surfaceScalarField am_s
+            (
+                min(min(phiv_pos - cSf_pos, phiv_neg - cSf_neg), v_zero)
+            );
+
+            surfaceScalarField a_pos_s("a_pos_s", ap_s/(ap_s - am_s));
+            surfaceScalarField amaxSf_s("amaxSf_s", max(mag(am_s), mag(ap_s)));
+            surfaceScalarField aSf_s("aSf_s", am_s*a_pos_s);
+
+            if (fluxScheme == "Tadmor")
+            {
+                aSf_s = -0.5*amaxSf_s;
+                a_pos_s = 0.5;
+            }
+
+            surfaceScalarField a_neg_s("a_neg_s", 1.0 - a_pos_s);
+
+            phiv_pos *= a_pos_s;
+            phiv_neg *= a_neg_s;
+
+            surfaceScalarField aphiv_pos("aphiv_pos", phiv_pos - aSf_s);
+            surfaceScalarField aphiv_neg("aphiv_neg", phiv_neg + aSf_s);
+
+            amaxSf_s = max(mag(aphiv_pos), mag(aphiv_neg));
+
+            surfaceScalarField phi_s
+            (
+                "phi_s",
+                aphiv_pos*rho_pos + aphiv_neg*rho_neg
+            );
+            surfaceVectorField phiUp_s
+            (
+                "phiUp_s",
+                (aphiv_pos*rhoU_pos + aphiv_neg*rhoU_neg)
+              + (a_pos_s*p_pos + a_neg_s*p_neg)*mesh.Sf()
+            );
+            surfaceScalarField phiEp_s
+            (
+                "phiEp_s",
+                aphiv_pos*(rho_pos*(e_pos_f + 0.5*magSqr(U_pos_s)) + p_pos)
+              + aphiv_neg*(rho_neg*(e_neg_f + 0.5*magSqr(U_neg_s)) + p_neg)
+              + aSf_s*p_pos - aSf_s*p_neg
+            );
+
+            // Copy boundary values from standard to fused output
+            forAll(mesh.boundary(), patchI)
+            {
+                phi.boundaryField()[patchI] =
+                    phi_s.boundaryField()[patchI];
+                phiUp.boundaryField()[patchI] =
+                    phiUp_s.boundaryField()[patchI];
+                phiEp.boundaryField()[patchI] =
+                    phiEp_s.boundaryField()[patchI];
+                amaxSf.boundaryField()[patchI] =
+                    amaxSf_s.boundaryField()[patchI];
+                a_pos.boundaryField()[patchI] =
+                    a_pos_s.boundaryField()[patchI];
+                a_neg.boundaryField()[patchI] =
+                    a_neg_s.boundaryField()[patchI];
+                U_pos.boundaryField()[patchI] =
+                    U_pos_s.boundaryField()[patchI];
+                U_neg.boundaryField()[patchI] =
+                    U_neg_s.boundaryField()[patchI];
+            }
+        }
+
+        cudaDeviceSynchronize();
+        double t1b = runTime.elapsedClockTime();
+
         #include "compressibleCourantNo.H"
         #include "readTimeControls.H"
         #include "setDeltaT.H"
@@ -197,14 +286,17 @@ int main(int argc, char *argv[])
 
         Info<< "Time = " << runTime.timeName() << nl << endl;
 
-        // --- Fast GPU mesh update (no CPU recalculation) ---
-        // For linearMotion: V and Sf are invariant under translation.
-        // Only meshPhi changes: meshPhi[f] = meshVelocity & Sf[f]
-        computeAnalyticalMeshPhi(mesh, meshPhiField, meshVelocity);
+        // ============================================================
+        // STEP 3: Dynamic mesh update
+        // ============================================================
+        mesh.update();
 
-        // --- Dynamic mesh correction ---
-        // Add mesh motion flux contribution to energy flux.
-        phiEp += meshPhiField * fvc::interpolate(rho/psi);
+        // Make mass flux relative to mesh motion:
+        // phi_relative = phi_absolute - meshPhi * rho_face
+        phi -= mesh.phi() * fvc::interpolate(rho);
+
+        // Energy flux mesh motion correction: meshPhi * p_face
+        phiEp += mesh.phi() * fvc::interpolate(p);
 
         cudaDeviceSynchronize();
         double t2 = runTime.elapsedClockTime();
@@ -265,7 +357,7 @@ int main(int argc, char *argv[])
         cudaDeviceSynchronize();
         double t4 = runTime.elapsedClockTime();
 
-        // --- Fused e and p: one kernel (replaces ~8 Thrust launches)
+        // --- Fused e and p
         launchFusedEandP(rho, U, rhoE, psi, e, p);
         e.correctBoundaryConditions();
         thermo.correct();
@@ -283,11 +375,9 @@ int main(int argc, char *argv[])
               - fvm::laplacian(turbulence->alphaEff(), e)
             );
             thermo.correct();
-            // --- Fused rhoE update (replaces ~4 Thrust launches)
             launchFusedRhoEUpdate(rho, e, U, rhoE);
         }
 
-        // p internal field already set by fusedPostSolve
         p.correctBoundaryConditions();
         rho.boundaryField() = psi.boundaryField()*p.boundaryField();
 
@@ -298,16 +388,12 @@ int main(int argc, char *argv[])
 
         if (runTime.value() > 0)
         {
-            double dt1 = t1 - t0;
-            double dt2 = t2 - t1;
-            double dt3 = t3 - t2;
-            double dt4 = t4 - t3;
-            double dt5 = t5 - t4;
-            Info<< "TIMING: Flux=" << dt1
-                << "s, Mesh=" << dt2
-                << "s, RhoU=" << dt3
-                << "s, RhoE=" << dt4
-                << "s, Post=" << dt5 << "s" << nl;
+            Info<< "TIMING: FusedFlux=" << (t1 - t0)
+                << "s, BndFix=" << (t1b - t1)
+                << "s, Mesh=" << (t2 - t1b)
+                << "s, RhoU=" << (t3 - t2)
+                << "s, RhoE=" << (t4 - t3)
+                << "s, Post=" << (t5 - t4) << "s" << nl;
         }
 
         runTime.write();

@@ -1169,6 +1169,65 @@ void Foam::AMIInterpolation<SourcePatch, TargetPatch>::update
         tgtgpuWeights_
     );
 
+    // === AMI DIAGNOSTICS (always on for debugging) ===
+    {
+        label srcEmpty = 0;
+        label tgtEmpty = 0;
+        label srcLow = 0;
+        label tgtLow = 0;
+        scalar srcMinWS = GREAT;
+        scalar srcMaxWS = -GREAT;
+        scalar tgtMinWS = GREAT;
+        scalar tgtMaxWS = -GREAT;
+        label srcTotalAddr = 0;
+        label tgtTotalAddr = 0;
+
+        forAll(srcAddress_, i)
+        {
+            if (srcAddress_[i].size() == 0) srcEmpty++;
+            srcTotalAddr += srcAddress_[i].size();
+        }
+        forAll(tgtAddress_, i)
+        {
+            if (tgtAddress_[i].size() == 0) tgtEmpty++;
+            tgtTotalAddr += tgtAddress_[i].size();
+        }
+        forAll(srcWeightsSum_, i)
+        {
+            srcMinWS = Foam::min(srcMinWS, srcWeightsSum_[i]);
+            srcMaxWS = Foam::max(srcMaxWS, srcWeightsSum_[i]);
+            if (srcWeightsSum_[i] < 0.5) srcLow++;
+        }
+        forAll(tgtWeightsSum_, i)
+        {
+            tgtMinWS = Foam::min(tgtMinWS, tgtWeightsSum_[i]);
+            tgtMaxWS = Foam::max(tgtMaxWS, tgtWeightsSum_[i]);
+            if (tgtWeightsSum_[i] < 0.5) tgtLow++;
+        }
+
+        Info<< "AMI DIAG: srcFaces=" << srcAddress_.size()
+            << " tgtFaces=" << tgtAddress_.size()
+            << " singlePatchProc=" << singlePatchProc_ << nl
+            << "  src: emptyAddr=" << srcEmpty
+            << " lowWeight(<0.5)=" << srcLow
+            << " totalAddr=" << srcTotalAddr
+            << " minWeightSum=" << srcMinWS
+            << " maxWeightSum=" << srcMaxWS << nl
+            << "  tgt: emptyAddr=" << tgtEmpty
+            << " lowWeight(<0.5)=" << tgtLow
+            << " totalAddr=" << tgtTotalAddr
+            << " minWeightSum=" << tgtMinWS
+            << " maxWeightSum=" << tgtMaxWS << nl
+            << "  GPU arrays: srcAddr=" << srcgpuAddress_.size()
+            << " srcStarts=" << srcgpuStartAddress_.size()
+            << " srcWeights=" << srcgpuWeights_.size()
+            << " tgtAddr=" << tgtgpuAddress_.size()
+            << " tgtStarts=" << tgtgpuStartAddress_.size()
+            << " tgtWeights=" << tgtgpuWeights_.size()
+            << endl;
+    }
+    // === END AMI DIAGNOSTICS ===
+
     if (debug)
     {
         Info<< "AMIInterpolation : Constructed addressing and weights" << nl
