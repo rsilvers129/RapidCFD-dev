@@ -7,7 +7,10 @@ c++WARN     = -Xcompiler -Wall -Xcompiler -Wextra -Xcompiler -Wno-unused-paramet
               -Xcudafe "--diag_suppress=implicit_return_from_non_void_function" \
               -Xcudafe "--diag_suppress=virtual_function_decl_hidden"
 
-CC          = nvcc -std=c++14 -m64 -arch=$(WM_GPU_ARCH) --use_fast_math -Xptxas -O3
+# NOTE: On CUDA 12.8 / sm_120 (Blackwell), --use_fast_math and c++14 + aggressive
+# ptxas flags from the Antigravity dynamic-mesh work caused
+# cudaErrorInvalidDeviceFunction in Thrust kernels. Keep the proven flags.
+CC          = nvcc -Xptxas -dlcm=cg -std=c++11 -m64 -arch=$(WM_GPU_ARCH)
 
 include $(RULES)/c++$(WM_COMPILE_OPTION)
 
@@ -25,5 +28,5 @@ cutoo      = $(Ctoo)
 
 LINK_LIBS   = $(c++DBUG)
 
-LINKLIBSO   = $(CC) $(c++FLAGS) -shared -cudart shared -Xlinker --add-needed -Xlinker --no-as-needed -Xlinker --allow-shlib-undefined
-LINKEXE     = $(CC) $(c++FLAGS) -cudart shared -Xlinker --add-needed -Xlinker --no-as-needed -Xlinker --allow-shlib-undefined
+LINKLIBSO   = $(CC) $(c++FLAGS) -shared -cudart shared -Xlinker --add-needed -Xlinker --no-as-needed
+LINKEXE     = $(CC) $(c++FLAGS) -cudart shared -Xlinker --add-needed -Xlinker --no-as-needed

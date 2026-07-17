@@ -13,8 +13,16 @@ Still in development stage, waiting for your contribution!
 * all the calculations are done on the GPU
 * no overhead for GPU-CPU memory copy
 * can run in parallel on multiple GPUs
+* **dynamic-mesh branch:** `rhoCentralDyMFoamCUDA` with `solidBodyMotionFvMesh` + fused KT flux kernels
 
-### Build status (this fork)
+### Branch notes
+
+| Branch | Status |
+|--------|--------|
+| `master` | Static-mesh CUDA 12.x / sm_120 build proven (`icoFoam` cavity) |
+| `dynamic-mesh` | DyM work (Antigravity + fixes). **Proven:** solid-body linear motion + `rhoCentralDyMFoamCUDA` on Blackwell. AMI / sliding-interface not smoke-tested yet. |
+
+### Build status (this fork, `dynamic-mesh`)
 
 Successfully built and smoke-tested on:
 
@@ -24,27 +32,36 @@ Successfully built and smoke-tested on:
 * **MPI:** system OpenMPI (`SYSTEMOPENMPI`)
 * **Platform tag:** `linux64NvccDPOptSM120`
 
-Verified: `icoFoam` lid-driven cavity (20×20×1) runs to completion on GPU with orthogonal schemes.
+Verified:
+
+* `icoFoam` lid-driven cavity (static)
+* `rhoCentralDyMFoamCUDA` with `solidBodyMotionFvMesh` / `linearMotion` on a translating box (mesh transforms each step; run completes)
+
+### Critical compiler flags (Blackwell / CUDA 12.8)
+
+Do **not** enable the Antigravity flag set (`--use_fast_math`, `-std=c++14`, aggressive `-Xptxas`) on this GPU/toolkit combo — it produces `cudaErrorInvalidDeviceFunction` inside Thrust. The working rules are:
+
+```
+# wmake/rules/linux64Nvcc/c++
+CC = nvcc -Xptxas -dlcm=cg -std=c++11 -m64 -arch=$(WM_GPU_ARCH)
+
+# wmake/rules/linux64Nvcc/c++Opt
+c++OPT = -O3
+```
 
 ### Compilation (Ubuntu 24.04 + modern CUDA)
 
-1. Install CUDA toolkit (nvcc) and a compatible NVIDIA driver. Ensure `nvcc` is on `PATH`:
-
-   ```bash
-   export PATH=/usr/local/cuda-12.8/bin:$PATH
-   export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:$LD_LIBRARY_PATH
-   ```
+1. Ensure `nvcc` is on `PATH` (e.g. `/usr/local/cuda-12.8/bin`).
 
 2. Install build deps: `g++`, `make`, `flex`, `bison`, `openmpi` (`libopenmpi-dev`, `openmpi-bin`).
 
-3. Clone so the install root contains `RapidCFD-dev` (and optionally `ThirdParty-dev`):
+3. Layout:
 
    ```bash
-   export FOAM_INST_DIR=/path/to/parent   # e.g. $HOME/dev
-   # layout: $FOAM_INST_DIR/RapidCFD-dev
+   export FOAM_INST_DIR=/path/to/parent   # contains RapidCFD-dev/
    ```
 
-4. Set GPU architecture in `etc/bashrc` / `etc/prefs.sh` (`WM_GPU_ARCH`):
+4. Set GPU arch in `etc/bashrc` / prefs (`WM_GPU_ARCH`):
 
    | GPU family | `WM_GPU_ARCH` |
    |------------|---------------|
@@ -52,32 +69,34 @@ Verified: `icoFoam` lid-driven cavity (20×20×1) runs to completion on GPU with
    | Hopper | `sm_90` |
    | Blackwell (RTX PRO 6000 / RTX 50) | `sm_120` |
 
-5. Source and build:
+5. Build:
 
    ```bash
    export FOAM_INST_DIR=/path/to/parent
    source $FOAM_INST_DIR/RapidCFD-dev/etc/bashrc
-   export WM_NCOMPPROCS=$(nproc)   # or a lower number
+   export WM_NCOMPPROCS=$(nproc)
    mkdir -p "$FOAM_EXT_LIBBIN"
    ./Allwmake 2>&1 | tee build.log
    ```
 
-6. Run solvers with a GPU device:
+6. Run DyM solver:
 
    ```bash
-   icoFoam -device 0 -case /path/to/case
+   rhoCentralDyMFoamCUDA -device 0 -case /path/to/case
    ```
 
-Notes:
+   Case needs `constant/dynamicMeshDict` with e.g. `solidBodyMotionFvMesh` + `linearMotion`, plus standard `rhoCentralFoam` thermo/fields.
 
-* This tree only builds **solvers** (no `blockMesh` / mesh utilities). Generate meshes with system OpenFOAM or another tool.
-* Prefer `snGradSchemes { default orthogonal; }` and matching laplacian schemes for now; `corrected` snGrad can hit a known CUDA `invalid device function` path on Tensor gradients under CUDA 12.8 / sm_120.
+### Known limitations / unfinished Antigravity work
+
+* Prefer `snGradSchemes { default orthogonal; }` (and matching laplacian). `corrected` snGrad has hit Tensor `invalid device function` paths historically.
+* No mesh utilities in this tree (no `blockMesh`) — generate meshes externally.
+* Fused kernels + hybrid AMI boundary fix are in the DyM solver; **AMI / cyclicAMI cases are not yet proven**.
+* `fastMeshUpdate.H` (analytical meshPhi for pure linearMotion) exists but the current solver uses full `mesh.update()`.
 * Multi-GPU still benefits from ThirdParty CUDA-aware MPI (optional).
 
 ### Original notes (Ubuntu 16.04 / CUDA 8)
 
 * ensure CUDA 7.5 is not installed from Ubuntu repositories
 * ensure you are using an nVidia driver compatible with CUDA 8
-* download CUDA 8.0 from NVIDIA's archive
-* to compile in parallel, `export WM_NCOMPPROCS=10`
 * ThirdParty-dev is needed for multiple GPUs with the bundled OpenMPI build
