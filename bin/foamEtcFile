@@ -99,7 +99,10 @@ unset versionNum
 # handle standard and debian naming convention
 #
 case "$projectDirName" in
-RapidCFD-*)         # standard naming convention OpenFOAM-<VERSION>
+RapidCFD-*)         # standard naming convention RapidCFD-<VERSION>
+    version="${projectDirName##RapidCFD-}"
+    ;;
+OpenFOAM-*)         # standard naming convention OpenFOAM-<VERSION>
     version="${projectDirName##OpenFOAM-}"
     ;;
 
