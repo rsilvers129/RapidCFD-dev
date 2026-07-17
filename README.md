@@ -20,7 +20,8 @@ Still in development stage, waiting for your contribution!
 | Branch | Status |
 |--------|--------|
 | `master` | Static-mesh CUDA 12.x / sm_120 build proven (`icoFoam` cavity) |
-| `dynamic-mesh` | DyM work (Antigravity + fixes). **Proven:** solid-body linear motion + `rhoCentralDyMFoamCUDA` on Blackwell. AMI / sliding-interface not smoke-tested yet. |
+| `dynamic-mesh` | DyM + AMI + LABEL64 workstream (upstream integration branch) |
+| `wopr-cuda` | **WOPR workstation track** — NVIDIA **RTX PRO 6000 Max-Q** (Blackwell, `sm_120`), CUDA 12.8, Ubuntu 24.04. Not B200. DyM solidBody proven; AMI tutorial proven; optional `WM_LABEL_SIZE=64`. |
 
 ### Build status (this fork, `dynamic-mesh`)
 
