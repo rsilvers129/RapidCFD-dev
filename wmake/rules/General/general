@@ -4,7 +4,8 @@ RANLIB     = ranlib
 CPP        = cpp
 LD         = ld
 
-GFLAGS     = -D$(WM_ARCH) -DWM_$(WM_PRECISION_OPTION)
+# Set WM_LABEL_SIZE=64 in prefs/bashrc for FOAM_LABEL64 (~100M-cell class meshes).
+GFLAGS     = -D$(WM_ARCH) -DWM_$(WM_PRECISION_OPTION)$(if $(filter 64,$(WM_LABEL_SIZE)), -DFOAM_LABEL64,)
 GINC       =
 GLIBS      = -lm
 GLIB_LIBS  =
