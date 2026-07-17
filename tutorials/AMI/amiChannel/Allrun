@@ -1,0 +1,7 @@
+#!/bin/sh
+cd "${0%/*}" || exit 1
+# Reconstruct mesh if needed
+if [ ! -f constant/polyMesh/points ]; then
+    python3 ../generate_ami_channel.py .
+fi
+icoFoam -device 0

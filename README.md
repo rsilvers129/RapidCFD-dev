@@ -91,7 +91,9 @@ c++OPT = -O3
 
 * Prefer `snGradSchemes { default orthogonal; }` (and matching laplacian). `corrected` snGrad has hit Tensor `invalid device function` paths historically.
 * No mesh utilities in this tree (no `blockMesh`) — generate meshes externally.
-* Fused kernels + hybrid AMI boundary fix are in the DyM solver; **AMI / cyclicAMI cases are not yet proven**.
+* **AMI proven** (see `tutorials/AMI/`): non-conformal cyclicAMI 64↔25 faces.
+  - `icoFoam` (static), `rhoCentralFoamCUDA` (static), `rhoCentralDyMFoamCUDA` + linearMotion (AMI rebuild each step).
+  - Still unproven: sliding/rotating multi-zone AMI (rotor-stator style cell zones).
 * `fastMeshUpdate.H` (analytical meshPhi for pure linearMotion) exists but the current solver uses full `mesh.update()`.
 * Multi-GPU still benefits from ThirdParty CUDA-aware MPI (optional).
 
