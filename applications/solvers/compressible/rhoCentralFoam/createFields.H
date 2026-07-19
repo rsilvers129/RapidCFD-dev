@@ -111,3 +111,21 @@ autoPtr<compressible::turbulenceModel> turbulence
         thermo
     )
 );
+
+// --- Positivity floors (wopr-cuda) -----------------------------------------
+// rhoCentralFoam has no native floor. Strong expansions (muzzle blast, the
+// exit near-vacuum) can drive rho or e to <= 0, after which U = rhoU/rho and
+// T(e) blow up to NaN (rhoCentral does not trap FPE, so it runs on producing
+// NaN). These floors clamp density and internal energy each step, mirroring
+// Sean's rhoMin lever. Tunable in controlDict (rhoMin [kg/m3], eMin [J/kg]);
+// defaults are far below any physical blast state so they only bite artifacts.
+dimensionedScalar rhoMin
+(
+    "rhoMin", dimDensity,
+    runTime.controlDict().lookupOrDefault<scalar>("rhoMin", 1.0e-4)
+);
+dimensionedScalar eMin
+(
+    "eMin", dimEnergy/dimMass,
+    runTime.controlDict().lookupOrDefault<scalar>("eMin", 1.0e4)
+);

@@ -40,11 +40,14 @@ Foam::sampledTriSurfaceMesh::sampleField
 
     if (sampleSource_ == cells || sampleSource_ == insideCells)
     {
-        // Sample cells
+        // Sample cells (RapidCFD GPU-safety: the internal field is in device memory;
+        // vField[cellI] would dereference device memory on the host and segfault.
+        // Bulk-copy to the host once via gpuField::asField(), then index on the host.)
+        const Field<Type> cellVals(vField.getField().asField());
 
         forAll(sampleElements_, triI)
         {
-            values[triI] = vField[sampleElements_[triI]];
+            values[triI] = cellVals[sampleElements_[triI]];
         }
     }
     else
@@ -62,12 +65,19 @@ Foam::sampledTriSurfaceMesh::sampleField
         {
             label bFaceI = pbm[patchI].start() - mesh().nInternalFaces();
 
+            // RapidCFD GPU-safety: fvPatchField is a device gpuField; copy its
+            // values to the host (asField()) before assigning into the host bVals.
+            const Field<Type> patchVals
+            (
+                vField.boundaryField()[patchI].asField()
+            );
+
             SubList<Type>
             (
                 bVals,
-                vField.boundaryField()[patchI].size(),
+                patchVals.size(),
                 bFaceI
-            ).assign(vField.boundaryField()[patchI]);
+            ).assign(patchVals);
         }
 
         // Sample in flat boundary field

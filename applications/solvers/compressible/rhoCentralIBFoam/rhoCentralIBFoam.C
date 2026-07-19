@@ -40,6 +40,7 @@ Description
 #include "fusedFlux.H"
 #include "fusedViscFlux.H"
 #include "fusedPostSolve.H"
+#include "movingBullet.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -131,24 +132,38 @@ int main(int argc, char *argv[])
         //   - 12x fvc::interpolate (rho, rhoU, rPsi, e, c to faces)
         //   - ~18x surface field arithmetic (U, p, phiv, cSf, ap, am, etc.)
         // All computed in a single pass over internal faces.
-        launchFusedFluxKernel
-        (
-            rho, rhoU, e, psi, c, mesh,
-            phi, phiUp, phiEp, amaxSf,
-            a_pos, a_neg, U_pos, U_neg,
-            isTadmor
-        );
+        //
+        // A4: when inviscid AND skipViscStores, use the variant that omits the
+        // a_pos/a_neg/U_pos/U_neg per-face stores (dead when there is no viscous
+        // flux). Same math otherwise ⇒ bit-identical result, fewer global writes.
+        // `skipViscStores false` forces the full path for an apples-to-apples A/B.
+        if (inviscid && skipViscStores)
+        {
+            launchFusedFluxKernelInviscid
+            (
+                rho, rhoU, e, psi, c, mesh,
+                phi, phiUp, phiEp, amaxSf,
+                isTadmor
+            );
+        }
+        else
+        {
+            launchFusedFluxKernel
+            (
+                rho, rhoU, e, psi, c, mesh,
+                phi, phiUp, phiEp, amaxSf,
+                a_pos, a_neg, U_pos, U_neg,
+                isTadmor
+            );
+        }
 
         // --- BOUNDARY FLUX FIX (wopr-cuda) -----------------------------------
-        // The fused kernel above fills only INTERNAL faces of phi/phiUp/phiEp.
-        // Their boundary faces were left at zero, so fvc::div() at boundary
-        // cells omitted the physical boundary flux -- most importantly the
-        // pressure term p*Sf in the momentum flux. That produced a spurious net
-        // force at every boundary cell (worst at corners, 3 faces), i.e. a
-        // uniform field would not stay at rest. The KT scheme reduces to the
-        // physical face flux at boundaries (pos == neg, the aSf terms cancel),
-        // so we set the boundary fluxes to that physical value -- matching the
-        // reference CPU rhoCentralFoam exactly.
+        // The fused kernels above fill only INTERNAL faces of phi/phiUp/phiEp;
+        // their boundary faces were left at zero, so fvc::div() at boundary
+        // cells omitted the physical boundary flux (esp. p*Sf in momentum),
+        // producing spurious force at boundary cells (a uniform field would not
+        // stay at rest). The KT scheme reduces to the physical face flux at
+        // boundaries (pos==neg), so set them to that -- matches CPU rhoCentral.
         forAll(mesh.boundary(), patchi)
         {
             phi.boundaryField()[patchi] =
@@ -267,6 +282,9 @@ int main(int argc, char *argv[])
         rho.boundaryField() = psi.boundaryField()*p.boundaryField();
 
         turbulence->correct();
+
+        // --- Immersed-boundary bullet: force the moving-solid state ---------
+        #include "enforceMovingBullet.H"
 
         runTime.write();
 

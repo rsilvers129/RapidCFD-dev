@@ -1,0 +1,3 @@
+rhoCentralIBFoam.C
+
+EXE = $(FOAM_APPBIN)/rhoCentralIBFoamCUDA

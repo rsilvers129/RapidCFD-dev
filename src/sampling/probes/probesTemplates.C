@@ -227,36 +227,34 @@ Foam::probes::sample
 
     Field<Type>& values = tValues();
 
-    if (fixedLocations_)
+    // --- RapidCFD GPU-safety (wopr-cuda) ---------------------------------------
+    // The internal field lives in device (GPU) memory. The CPU-side interpolation
+    // object holds a raw DEVICE pointer (interpolation.C: psiPtr_ = psi.getField()
+    // .data()) which interpolationCell dereferences on the host (psiPtr_[cellI]),
+    // segfaulting. Instead copy the internal field to the host ONCE via
+    // gpuField::asField() (the canonical device->host idiom, cf.
+    // sampledThresholdCellFaces::sampleField) and index on the host. This realises
+    // the "cell" scheme (cell value) == interpolationCell's result and is the probes
+    // default; higher-order fixedLocations schemes are not GPU-safe here and fall
+    // back to cell values with a warning.
+    if (fixedLocations_ && interpolationScheme_ != "cell")
     {
-        autoPtr<interpolation<Type> > interpolator
+        WarningIn
         (
-            interpolation<Type>::New(interpolationScheme_, vField)
-        );
-
-        forAll(*this, probeI)
-        {
-            if (elementList_[probeI] >= 0)
-            {
-                const vector& position = operator[](probeI);
-
-                values[probeI] = interpolator().interpolate
-                (
-                    position,
-                    elementList_[probeI],
-                    -1
-                );
-            }
-        }
+            "Foam::probes::sample"
+            "(const GeometricField<Type, fvPatchField, volMesh>&) const"
+        )   << "interpolationScheme '" << interpolationScheme_
+            << "' is not GPU-safe in RapidCFD; sampling cell values instead."
+            << endl;
     }
-    else
+
+    const Field<Type> hostField(vField.getField().asField());
+
+    forAll(*this, probeI)
     {
-        forAll(*this, probeI)
+        if (elementList_[probeI] >= 0)
         {
-            if (elementList_[probeI] >= 0)
-            {
-                values[probeI] = vField.getField().get(elementList_[probeI]);
-            }
+            values[probeI] = hostField[elementList_[probeI]];
         }
     }
 
